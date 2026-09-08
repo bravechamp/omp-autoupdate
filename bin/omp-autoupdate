@@ -1,0 +1,166 @@
+#!/bin/sh
+# omp-autoupdate — run `omp update` only while someone is actually at the machine.
+#
+# Usage: omp-autoupdate [wake|timer|manual] [--force]
+#   wake    fired by the wake hook (macOS sleepwatcher); sleeps WAKE_SETTLE for Wi-Fi first
+#   timer   fired by launchd (macOS) / systemd user timer (Linux)
+#   manual  default when run by hand
+#   --force skip every gate
+#
+# Config: $OMP_AGENT_DIR/autoupdate.conf (KEY=value, written by `/autoupdate config`):
+#   OMP_BIN      omp executable (default: `omp` on PATH)
+#   PRESENCE     lid | clamshell | user | none        (default lid)
+#                lid       lid must be open
+#                clamshell lid open, or lid closed with recent user input (external display)
+#                user      recent user input, lid ignored
+#                none      no presence gate
+#   MIN_GAP      seconds between successful runs       (default 3600)
+#   WAKE_SETTLE  seconds to wait after wake             (default 20)
+#   TOKEN_FILE   file holding a GitHub token for release metadata (default ~/.secrets/github_token)
+#
+# Exit 0 on skip or success; omp's exit code on failure. Only a successful run stamps
+# last-success, so a no-network wake is retried by the next wake or timer tick.
+set -u
+
+AGENT_DIR="${OMP_AGENT_DIR:-${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}}"
+CONF="$AGENT_DIR/autoupdate.conf"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omp-autoupdate"
+STAMP="$STATE_DIR/last-success"
+LOCK="$STATE_DIR/lock"
+case "$(uname -s)" in
+Darwin) LOG="$HOME/Library/Logs/omp-autoupdate.log" ;;
+*) LOG="$STATE_DIR/autoupdate.log" ;;
+esac
+
+OMP_BIN=""
+PRESENCE="lid"
+MIN_GAP=3600
+WAKE_SETTLE=20
+TOKEN_FILE="$HOME/.secrets/github_token"
+# shellcheck disable=SC1090
+[ -r "$CONF" ] && . "$CONF"
+[ -n "$OMP_BIN" ] || OMP_BIN=$(command -v omp 2>/dev/null || printf '%s' "$HOME/.local/bin/omp")
+
+reason=manual
+force=0
+for arg in "$@"; do
+	case "$arg" in
+	--force) force=1 ;;
+	wake | timer | manual) reason=$arg ;;
+	*)
+		printf 'usage: omp-autoupdate [wake|timer|manual] [--force]\n' >&2
+		exit 64
+		;;
+	esac
+done
+
+mkdir -p "$STATE_DIR" "$(dirname "$LOG")"
+log() { printf '%s %s %s\n' "$(date '+%F %T')" "$reason" "$*" >>"$LOG"; }
+
+# Rotate the log once it passes 512 KiB.
+if [ -f "$LOG" ] && [ "$(wc -c <"$LOG")" -gt 524288 ]; then
+	mv -f "$LOG" "$LOG.1"
+fi
+
+# open | closed | unknown (desktops, VMs)
+lid_state() {
+	case "$(uname -s)" in
+	Darwin)
+		case "$(ioreg -r -k AppleClamshellState -d 4 2>/dev/null)" in
+		*'"AppleClamshellState" = Yes'*) echo closed ;;
+		*'"AppleClamshellState" = No'*) echo open ;;
+		*) echo unknown ;;
+		esac
+		;;
+	Linux)
+		for f in /proc/acpi/button/lid/*/state; do
+			[ -r "$f" ] || continue
+			case "$(cat "$f")" in
+			*closed*) echo closed ;;
+			*open*) echo open ;;
+			*) echo unknown ;;
+			esac
+			return
+		done
+		echo unknown
+		;;
+	*) echo unknown ;;
+	esac
+}
+
+# 0 when the user touched keyboard/mouse recently (macOS: WindowServer's UserIsActive
+# assertion, ~10 min window; dark wakes / Power Nap never set it).
+user_active() {
+	case "$(uname -s)" in
+	Darwin) [ "$(pmset -g assertions 2>/dev/null | awk '$1 == "UserIsActive" { print $2; exit }')" = 1 ] ;;
+	Linux)
+		sid="${XDG_SESSION_ID:-$(loginctl 2>/dev/null | awk -v u="$(id -un)" '$3 == u { print $1; exit }')}"
+		[ -n "$sid" ] && [ "$(loginctl show-session "$sid" -p IdleHint --value 2>/dev/null)" = no ]
+		;;
+	*) return 1 ;;
+	esac
+}
+
+if [ "$force" -eq 0 ]; then
+	lid=$(lid_state)
+	case "$PRESENCE" in
+	lid)
+		if [ "$lid" = closed ]; then
+			log "skip: lid closed"
+			exit 0
+		fi
+		;;
+	clamshell)
+		if [ "$lid" = closed ] && ! user_active; then
+			log "skip: lid closed, no user activity"
+			exit 0
+		fi
+		;;
+	user)
+		if ! user_active; then
+			log "skip: no user activity"
+			exit 0
+		fi
+		;;
+	none) ;;
+	*)
+		log "skip: unknown PRESENCE=$PRESENCE (use lid|clamshell|user|none)"
+		exit 78
+		;;
+	esac
+	if [ -f "$STAMP" ]; then
+		age=$(($(date +%s) - $(stat -f %m "$STAMP" 2>/dev/null || stat -c %Y "$STAMP")))
+		if [ "$age" -lt "$MIN_GAP" ]; then
+			log "skip: last success ${age}s ago (< ${MIN_GAP}s)"
+			exit 0
+		fi
+	fi
+fi
+
+# One run at a time (wake and timer can coincide). A lock older than 30 min is stale.
+if [ -d "$LOCK" ]; then
+	lock_age=$(($(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || stat -c %Y "$LOCK")))
+	if [ "$lock_age" -gt 1800 ]; then rmdir "$LOCK" 2>/dev/null; fi
+fi
+if ! mkdir "$LOCK" 2>/dev/null; then
+	log "skip: another run in progress"
+	exit 0
+fi
+trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
+
+[ "$reason" = wake ] && sleep "$WAKE_SETTLE"
+
+# GitHub release metadata is rate-limited unauthenticated (60/h per IP).
+if [ -z "${GITHUB_TOKEN:-}" ] && [ -r "$TOKEN_FILE" ]; then
+	GITHUB_TOKEN=$(cat "$TOKEN_FILE")
+	export GITHUB_TOKEN
+fi
+
+before=$("$OMP_BIN" --version 2>/dev/null)
+log "start $before"
+"$OMP_BIN" update >>"$LOG" 2>&1
+rc=$?
+after=$("$OMP_BIN" --version 2>/dev/null)
+log "end rc=$rc $after"
+[ "$rc" -eq 0 ] && touch "$STAMP"
+exit "$rc"

@@ -1,0 +1,39 @@
+{
+  "name": "omp-autoupdate",
+  "version": "0.1.0",
+  "description": "Keep omp current: presence-gated self-update on wake (macOS) or timer (Linux), and idle-time self-restart of running sessions on every platform",
+  "license": "MIT",
+  "type": "module",
+  "author": "bravechamp <radular@protonmail.com>",
+  "keywords": [
+    "omp",
+    "oh-my-pi",
+    "extension",
+    "update",
+    "launchd",
+    "sleepwatcher"
+  ],
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
+  "bin": {
+    "omp-autoupdate": "./bin/omp-autoupdate"
+  },
+  "omp": {
+    "name": "omp-autoupdate",
+    "description": "Presence-gated omp self-update plus idle-time session restart",
+    "extensions": [
+      "./src/extension.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bravechamp/omp-autoupdate.git"
+  },
+  "homepage": "https://github.com/bravechamp/omp-autoupdate#readme",
+  "bugs": {
+    "url": "https://github.com/bravechamp/omp-autoupdate/issues"
+  }
+}
