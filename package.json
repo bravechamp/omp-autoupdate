@@ -1,7 +1,7 @@
 {
   "name": "omp-autoupdate",
   "version": "0.1.0",
-  "description": "Keep omp current: presence-gated self-update on wake (macOS) or timer (Linux), and idle-time self-restart of running sessions on every platform",
+  "description": "Keep omp up to date: presence-gated self-update on lid-open/wake or timer (macOS launchd + sleepwatcher, Linux systemd) and idle-time self-restart of running sessions",
   "license": "MIT",
   "type": "module",
   "author": "bravechamp <radular@protonmail.com>",
@@ -23,7 +23,7 @@
   },
   "omp": {
     "name": "omp-autoupdate",
-    "description": "Presence-gated omp self-update plus idle-time session restart",
+    "description": "Presence-gated omp self-update (lid-open/wake, timer) and idle-time session restart",
     "extensions": [
       "./src/extension.ts"
     ]
