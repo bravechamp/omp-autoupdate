@@ -57,6 +57,21 @@ done
 mkdir -p "$STATE_DIR" "$(dirname "$LOG")"
 log() { printf '%s %s %s\n' "$(date '+%F %T')" "$reason" "$*" >>"$LOG"; }
 
+# mtime <file> — epoch seconds of a file's mtime. GNU/uutils stat and BSD/macOS stat
+# disagree on flags, and `stat -f %m` is not a plain failure everywhere: on GNU/uutils
+# `-f` means file-system, `%m` is taken as a path operand, so the command dumps the
+# filesystem block to stdout *and* exits non-zero. Chaining it as
+# `$(stat -f %m f || stat -c %Y f)` therefore captures the dump plus the fallback
+# timestamp, and `$(( ))` dies with "arithmetic expression: expecting EOF".
+# Probe first, capture second, so only the successful flavor reaches stdout.
+mtime() {
+	if stat -c %Y "$1" >/dev/null 2>&1; then
+		stat -c %Y "$1"
+	else
+		stat -f %m "$1" 2>/dev/null
+	fi
+}
+
 # Rotate the log once it passes 512 KiB.
 if [ -f "$LOG" ] && [ "$(wc -c <"$LOG")" -gt 524288 ]; then
 	mv -f "$LOG" "$LOG.1"
@@ -129,7 +144,7 @@ if [ "$force" -eq 0 ]; then
 		;;
 	esac
 	if [ -f "$STAMP" ]; then
-		age=$(($(date +%s) - $(stat -f %m "$STAMP" 2>/dev/null || stat -c %Y "$STAMP")))
+		age=$(($(date +%s) - $(mtime "$STAMP")))
 		if [ "$age" -lt "$MIN_GAP" ]; then
 			log "skip: last success ${age}s ago (< ${MIN_GAP}s)"
 			exit 0
@@ -139,7 +154,7 @@ fi
 
 # One run at a time (wake and timer can coincide). A lock older than 30 min is stale.
 if [ -d "$LOCK" ]; then
-	lock_age=$(($(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || stat -c %Y "$LOCK")))
+	lock_age=$(($(date +%s) - $(mtime "$LOCK")))
 	if [ "$lock_age" -gt 1800 ]; then rmdir "$LOCK" 2>/dev/null; fi
 fi
 if ! mkdir "$LOCK" 2>/dev/null; then

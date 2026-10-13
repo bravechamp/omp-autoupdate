@@ -210,8 +210,25 @@ function linkScript(report: string[]): void {
 	report.push(`+ ${SCRIPT_LINK} → ${SCRIPT_SOURCE}`);
 }
 
+/**
+ * PATH for the scheduler units. `omp update` resolves its own install target through
+ * PATH, so the directory holding the configured omp binary has to be on it: a unit PATH
+ * of just the script dir plus /usr/bin fails with "Could not resolve omp binary path in
+ * PATH" whenever omp lives in ~/.bun/bin, ~/.local/bin, mise's shims, etc. The script
+ * dir stays first so `omp-bin` left empty ("omp on PATH") keeps working.
+ */
+function schedulerPathDirs(cfg: Config): string[] {
+	const dirs = [path.dirname(SCRIPT_LINK)];
+	const bin = cfg.ompBin.trim().replace(/^~(?=\/|$)/, homedir());
+	if (bin !== "" && bin !== "-" && bin.includes("/")) dirs.push(path.dirname(path.resolve(bin)));
+	for (const dir of ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]) {
+		if (!dirs.includes(dir)) dirs.push(dir);
+	}
+	return dirs;
+}
+
 function launchdPlist(cfg: Config): string {
-	const pathEnv = [path.dirname(SCRIPT_LINK), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].join(":");
+	const pathEnv = schedulerPathDirs(cfg).join(":");
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -314,7 +331,7 @@ Description=omp self-update (presence gated)
 [Service]
 Type=oneshot
 ExecStart=${SCRIPT_LINK} timer
-Environment=PATH=${path.dirname(SCRIPT_LINK)}:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=${schedulerPathDirs(cfg).join(":")}
 Environment=OMP_AGENT_DIR=${AGENT_DIR}
 `;
 	const timer = `[Unit]
